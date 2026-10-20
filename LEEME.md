@@ -57,7 +57,7 @@ Poné las imágenes en `public/img/` (por ejemplo `public/img/sabado.jpg`, 1200x
 ## Notas
 
 - Dejá la pestaña abierta mientras se envía. Las pausas entre mensajes las maneja el navegador.
-- La tarjeta la dibuja el celular de quien recibe (Mensajes de Google con vistas previas activadas). No se puede forzar.
+- La tarjeta la dibuja el celular de quien recibe (Mensajes de Google con vistas previas activadas).   No se puede forzar.
 - Usá tu propio dominio y no acortadores tipo bit.ly: muchas veces no generan tarjeta y las operadoras desconfían.
 - Las tildes hacen que cada SMS sea de 70 caracteres en vez de 160. El contador te avisa.
 - Enviá solo a gente que te dio su número, en tandas chicas y con pausas largas, para cuidar tu línea.
