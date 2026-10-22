@@ -134,6 +134,11 @@
       <div class="grid" style="margin-top:16px">
         <div class="wide"><label class="f" for="cc">Código de país para números sin prefijo</label><input id="cc" type="text" value="54"></div>
       </div>
+      <div class="row" style="align-items:flex-end">
+        <div style="flex:1 1 220px"><label class="f" for="skipN">Marcar como ya enviados los primeros</label><input id="skipN" type="number" min="0" value="0" inputmode="numeric"></div>
+        <button class="ghost" id="skipApply">Aplicar</button>
+      </div>
+      <p class="hint">Sirve para retomar una lista que quedó a medias: esos contactos no se vuelven a enviar.</p>
       <div class="row"><button class="ghost" id="clear">Vaciar lista</button></div>
     </div>
   </section>
@@ -170,14 +175,23 @@
     <div class="grid" style="margin-top:24px">
       <div><label class="f" for="dmin">Pausa mínima entre envíos (seg)</label><input id="dmin" type="number" min="1" value="8"></div>
       <div><label class="f" for="dmax">Pausa máxima (seg)</label><input id="dmax" type="number" min="1" value="15"></div>
+      <div class="wide"><label class="f" for="lim">Máximo de mensajes en esta tanda (opcional)</label><input id="lim" type="number" min="1" inputmode="numeric" placeholder="Ej: 450"></div>
     </div>
     <div class="row">
       <button id="start" disabled>Enviar</button>
       <button class="ghost" id="pause" disabled>Pausar</button>
       <button class="ghost" id="stop" disabled>Detener</button>
+      <button class="ghost" id="check" disabled>Verificar estado</button>
       <button class="ghost" id="export" disabled>Descargar resultados</button>
     </div>
-    <p class="hint">Dejá esta pestaña abierta mientras se envía. Si la cerrás, el envío se detiene y podés retomarlo después.</p>
+    <div class="row" style="margin-top:8px"><button class="link" id="requeue" hidden>Reenviar los que siguen en cola</button></div>
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1 1 200px"><label class="f" for="syncWin">Sincronizar con el celular: mirar los envíos de</label>
+        <select id="syncWin" style="width:100%;min-height:44px;padding:10px 12px;font-size:16px;border:1px solid var(--line);border-radius:6px;background:#fff;color:#000"><option value="24">Últimas 24 horas</option><option value="48" selected>Últimas 48 horas</option><option value="168">Últimos 7 días</option></select></div>
+      <button class="ghost" id="sync">Sincronizar</button>
+    </div>
+    <p class="hint">Cruza tu lista con lo que el celular realmente envió: marca enviados a los que salieron, y deja pendientes (o con error) a los que no.</p>
+    <p class="hint">Dejá esta pestaña abierta mientras se envía. La plataforma verifica con el celular que cada mensaje salga de verdad y, si se acumulan en cola, espera sola a que el celular los envíe. Si cerrás la pestaña, la lista y el avance quedan guardados en este navegador.</p>
   </section>
 </main>
 
@@ -257,7 +271,7 @@ async function testConn() {
 $('test').onclick = testConn;
 
 /* ---------- Ajustes locales (sin datos sensibles) ---------- */
-const SAVE = ['cc', 'msg', 'dmin', 'dmax', 'lt', 'ld', 'li', 'lu'];
+const SAVE = ['cc', 'msg', 'dmin', 'dmax', 'lim', 'lt', 'ld', 'li', 'lu'];
 function loadSettings() {
   try {
     const s = JSON.parse(localStorage.getItem('sms-cfg') || '{}');
@@ -408,8 +422,37 @@ function onChange() { updateMessageInfo(); updateCard(); refreshButtons(); saveS
 $('msg').addEventListener('input', onChange);
 ['li', 'lu', 'lt', 'ld'].forEach((k) => $(k).addEventListener('input', () => { scheduleLink(); saveSettings(); }));
 
+/* ---------- Persistencia y estado real ---------- */
+const MAX_QUEUE = 5;
+let authLost = false, failStreak = 0, lastFail = '';
+function persist() { try { localStorage.setItem('sms-list', JSON.stringify(contacts)); } catch (e) {} }
+function restore() {
+  try {
+    const a = JSON.parse(localStorage.getItem('sms-list') || '[]');
+    if (Array.isArray(a)) contacts = a.map((c) => ({ ...c, status: c.status === 'enviando' ? 'pendiente' : c.status }));
+  } catch (e) {}
+}
+const queued = () => contacts.filter((c) => c.valid && c.status === 'en cola');
+async function pollStatus() {
+  const q = queued().filter((c) => c.id);
+  for (let i = 0; i < q.length; i += 20) {
+    const chunk = q.slice(i, i + 20);
+    const r = await api('/api/status', { ids: chunk.map((c) => c.id) });
+    if (r.status === 401) { authLost = true; return; }
+    if (!r.ok || !r.results) continue;
+    chunk.forEach((c) => {
+      const st = r.results[c.id];
+      if (!st) return;
+      if (st.state === 'Sent' || st.state === 'Delivered') { c.status = 'enviado'; c.err = ''; failStreak = 0; }
+      else if (st.state === 'Failed') { c.status = 'error'; c.err = st.error || 'Falló en el celular'; failStreak++; lastFail = c.err; }
+      else if (st.state === 'Cancelled' || st.state === 'Cancelling') { c.status = 'error'; c.err = 'Cancelado'; }
+    });
+  }
+  render();
+}
+
 /* ---------- Render ---------- */
-const LABEL = { pendiente: 'Pendiente', enviando: 'Enviando…', enviado: 'Enviado', error: 'Error', 'inválido': 'Número inválido', duplicado: 'Repetido' };
+const LABEL = { pendiente: 'Pendiente', enviando: 'Enviando…', 'en cola': 'En cola del celular', enviado: 'Enviado', error: 'Error', 'inválido': 'Número inválido', duplicado: 'Repetido' };
 function render() {
   $('listWrap').hidden = !contacts.length;
   const tb = $('rows');
@@ -429,6 +472,7 @@ function render() {
   updateMessageInfo();
   renderProgress();
   refreshButtons();
+  persist();
 }
 function renderProgress() {
   const total = contacts.filter((c) => c.valid).length;
@@ -436,11 +480,15 @@ function renderProgress() {
   const errs = contacts.filter((c) => c.valid && c.status === 'error').length;
   $('count').innerHTML = `${sent}<span> / ${total}</span>`;
   $('barfill').style.width = total ? (sent / total * 100) + '%' : '0';
-  $('errs').textContent = errs ? `${errs} con error` : '';
+  const q = contacts.filter((c) => c.valid && c.status === 'en cola').length;
+  $('errs').textContent = [q ? `${q} en cola` : '', errs ? `${errs} con error` : ''].filter(Boolean).join(' · ');
   $('errs').style.color = errs ? 'var(--err)' : '';
 }
 function refreshButtons() {
-  const pending = contacts.filter((c) => c.valid && c.status !== 'enviado').length;
+  const pending = contacts.filter((c) => c.valid && c.status !== 'enviado' && c.status !== 'en cola').length;
+  const inQ = contacts.some((c) => c.valid && c.status === 'en cola');
+  $('check').disabled = !inQ;
+  $('requeue').hidden = running || !inQ;
   $('start').disabled = running || !pending || !$('msg').value.trim();
   $('pause').disabled = !running;
   $('stop').disabled = !running;
@@ -449,7 +497,28 @@ function refreshButtons() {
 }
 
 /* ---------- Envío ---------- */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Los temporizadores de una pestaña en segundo plano se frenan a ~1 por minuto.
+// Se usa un Worker para que las pausas del envío sigan a su ritmo aunque cambies de pestaña.
+let tick = null, tickId = 0;
+const tickWait = {};
+try {
+  const code = 'onmessage=function(e){var d=e.data;setTimeout(function(){postMessage(d.id)},d.ms)}';
+  tick = new Worker(URL.createObjectURL(new Blob([code], { type: 'text/javascript' })));
+  tick.onmessage = (e) => { const f = tickWait[e.data]; if (f) { delete tickWait[e.data]; f(); } };
+} catch (e) { tick = null; }
+const sleep = (ms) => new Promise((r) => {
+  if (!tick) return setTimeout(r, ms);
+  const id = ++tickId; tickWait[id] = r; tick.postMessage({ id, ms });
+});
+// Evita que la computadora se duerma mientras se envía.
+let wake = null;
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator) wake = await navigator.wakeLock.request('screen');
+    else if (wake) { await wake.release(); wake = null; }
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (running && document.visibilityState === 'visible') keepAwake(true); });
 async function waitInterruptible(ms) { const end = Date.now() + ms; while (Date.now() < end && !stopped) await sleep(200); }
 $('pause').onclick = () => {
   paused = !paused;
@@ -460,8 +529,10 @@ $('stop').onclick = () => { stopped = true; paused = false; $('pause').textConte
 
 $('start').onclick = async () => {
   if (running) return;
-  const queue = contacts.filter((c) => c.valid && c.status !== 'enviado');
+  let queue = contacts.filter((c) => c.valid && c.status !== 'enviado' && c.status !== 'en cola');
   if (!queue.length) return;
+  const lim = parseInt($('lim').value, 10);
+  if (lim > 0) queue = queue.slice(0, lim);
   $('start').disabled = true;
   const hasDest = !!linkInputs().url;
   const ready = await ensureLink();
@@ -470,33 +541,138 @@ $('start').onclick = async () => {
   if (!confirm(`Se van a enviar ${queue.length} mensajes desde tu celular${ready ? ' con enlace con vista previa' : ' sin enlace'}. ¿Continuar?`)) return;
   saveSettings();
   running = true; paused = false; stopped = false;
+  keepAwake(true);
   $('state').textContent = 'Enviando…';
   refreshButtons();
   const min = Math.max(1, Number($('dmin').value) || 8);
   const max = Math.max(min, Number($('dmax').value) || 15);
-  let expired = false;
+  let expired = false, halted = false;
+  authLost = false; failStreak = 0; lastFail = '';
 
   for (let i = 0; i < queue.length; i++) {
     while (paused && !stopped) await sleep(250);
     if (stopped) break;
+    // Espera al celular: si hay mensajes acumulados en cola, no se manda más hasta que salgan.
+    if (queued().length) await pollStatus();
+    while (!authLost && queued().length >= MAX_QUEUE && !stopped) {
+      $('state').textContent = `Esperando al celular… ${queued().length} en cola. Si no avanza, abrí SMS Gateway en el celular.`;
+      await waitInterruptible(5000);
+      if (stopped) break;
+      await pollStatus();
+    }
+    if (authLost) { expired = true; break; }
+    if (failStreak >= 5) { halted = true; break; }
+    if (stopped) break;
+    $('state').textContent = paused ? 'En pausa' : 'Enviando…';
     const c = queue[i];
     c.status = 'enviando'; c.err = ''; render();
     try {
       const r = await api('/api/send', { to: c.tel, message: personalize(c) });
       if (r.status === 401) { c.status = 'pendiente'; expired = true; break; }
-      if (r.ok) c.status = 'enviado'; else { c.status = 'error'; c.err = r.error || 'No se pudo enviar'; }
+      if (r.ok) { if (r.id) { c.id = r.id; c.status = 'en cola'; } else c.status = 'enviado'; }
+      else { c.status = 'error'; c.err = r.error || 'No se pudo enviar'; }
     } catch (e) { c.status = 'error'; c.err = 'Sin conexión a internet'; }
     render();
     if (i < queue.length - 1) await waitInterruptible((min + Math.random() * (max - min)) * 1000);
   }
 
-  const left = contacts.filter((c) => c.valid && c.status !== 'enviado').length;
-  $('state').textContent = expired ? 'Sesión vencida' : stopped ? 'Detenido' : left ? 'Terminó con errores' : 'Envío completo';
+  const left = contacts.filter((c) => c.valid && (c.status === 'error' || c.status === 'pendiente')).length;
+  const inQueue = queued().length;
+  $('state').textContent = expired ? 'Sesión vencida' : halted ? `Se detuvo: el celular falló ${failStreak} veces seguidas (${lastFail}). Revisá el celular y reintentá.` : stopped ? 'Detenido' : inQueue ? 'Enviado al celular. Verificando que salgan…' : left ? 'Terminó con errores' : 'Envío completo';
   running = false; paused = false; stopped = false;
+  keepAwake(false);
   $('pause').textContent = 'Pausar';
   render();
   if (expired) showLogin('Sesión vencida. Entrá de nuevo para retomar.');
 };
+
+$('skipApply').onclick = () => {
+  if (running) return;
+  const n = Math.max(0, parseInt($('skipN').value, 10) || 0);
+  if (!n) return;
+  if (!confirm(`Se van a marcar como ya enviados los primeros ${n} contactos válidos de la lista (en el orden del archivo). ¿Continuar?`)) return;
+  let k = 0;
+  contacts.forEach((c) => { if (c.valid && k < n) { c.status = 'enviado'; c.err = ''; c.id = ''; k++; } });
+  render();
+  $('state').textContent = `${k} contactos marcados como ya enviados.`;
+};
+/* ---------- Sincronizar con el gateway ---------- */
+async function sha16(str) {
+  const b = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(b)).slice(0, 8).map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+const RANK = { Delivered: 3, Sent: 3, Pending: 2, Processed: 2, Failed: 1 };
+async function syncGateway() {
+  if (running) return;
+  const valid = contacts.filter((c) => c.valid && c.tel);
+  if (!valid.length) { $('state').textContent = 'Primero cargá la lista de contactos.'; return; }
+  $('sync').disabled = true;
+  try {
+    const from = new Date(Date.now() - Number($('syncWin').value) * 3600 * 1000).toISOString();
+    const items = [];
+    let offset = 0, total = null;
+    for (let page = 0; page < 80; page++) {
+      $('state').textContent = `Leyendo envíos del celular… ${items.length}${total ? ' de ' + total : ''}`;
+      const r = await api('/api/messages', { from, offset, limit: 50 });
+      if (r.status === 401) return showLogin('Sesión vencida');
+      if (!r.ok) { $('state').textContent = 'No se pudo leer el historial: ' + (r.error || 'error'); return; }
+      if (r.total) total = r.total;
+      items.push(...r.items);
+      offset += r.items.length;
+      if (!r.items.length || (total && offset >= total) || r.items.length < 50) break;
+    }
+    // el gateway guarda los destinatarios como los primeros 16 caracteres del SHA-256, o como número
+    const byKey = new Map();
+    for (const c of valid) {
+      const h = await sha16(c.tel);
+      for (const k of [h, c.tel]) { if (!byKey.has(k)) byKey.set(k, []); byKey.get(k).push(c); }
+    }
+    const best = new Map();
+    for (const m of items) {
+      for (const rc of m.recipients) {
+        const rank = RANK[rc.s] || 0;
+        if (!rank) continue;
+        for (const c of byKey.get(rc.p) || []) {
+          const cur = best.get(c);
+          if (!cur || rank > cur.rank) best.set(c, { rank, id: m.id, err: rc.e });
+        }
+      }
+    }
+    let ok = 0, queue = 0, fail = 0;
+    for (const c of valid) {
+      if (c.status === 'enviado') continue;
+      const b = best.get(c);
+      if (!b) continue;
+      if (b.rank === 3) { c.status = 'enviado'; c.err = ''; c.id = b.id; ok++; }
+      else if (b.rank === 2) { c.status = 'en cola'; c.err = ''; c.id = b.id; queue++; }
+      else { c.status = 'error'; c.err = b.err || 'Falló en el celular'; c.id = ''; fail++; }
+    }
+    render();
+    const sinRegistro = valid.filter((c) => c.status === 'pendiente').length;
+    $('state').textContent = `Sincronizado (${items.length} mensajes leídos): ${ok} enviados, ${queue} en cola, ${fail} con error, ${sinRegistro} sin registro (pendientes).`;
+  } catch (e) {
+    $('state').textContent = 'No se pudo sincronizar: ' + e.message;
+  } finally { $('sync').disabled = false; }
+}
+$('sync').onclick = syncGateway;
+
+$('check').onclick = async () => {
+  $('check').disabled = true;
+  $('state').textContent = 'Verificando con el celular…';
+  authLost = false;
+  await pollStatus();
+  if (authLost) return showLogin('Sesión vencida');
+  const n = queued().length;
+  $('state').textContent = n ? `${n} siguen en cola del celular.` : 'Todos los mensajes verificados.';
+  refreshButtons();
+};
+$('requeue').onclick = () => {
+  if (running) return;
+  if (!confirm('Esto vuelve a mandar los mensajes que el celular todavía no envió. Si el celular los procesa más tarde, esas personas pueden recibir el SMS dos veces. ¿Continuar?')) return;
+  contacts.forEach((c) => { if (c.status === 'en cola') { c.status = 'pendiente'; c.id = ''; } });
+  render();
+};
+setInterval(() => { if (!running && !$('app').hidden && queued().length) pollStatus(); }, 15000);
 
 $('export').onclick = () => {
   const esc = (v) => '"' + String(v).replace(/"/g, '""') + '"';
@@ -509,11 +685,12 @@ $('export').onclick = () => {
 
 /* ---------- Inicio ---------- */
 loadSettings();
+restore();
 $('cc').addEventListener('change', () => {
   contacts.forEach((c) => { const t = normalize(c.raw); c.tel = t; c.valid = !!t && c.status !== 'duplicado'; if (c.status !== 'enviado') c.status = t ? 'pendiente' : 'inválido'; });
   render(); saveSettings();
 });
-['dmin', 'dmax'].forEach((k) => $(k).addEventListener('change', saveSettings));
+['dmin', 'dmax', 'lim'].forEach((k) => $(k).addEventListener('change', saveSettings));
 render();
 updateCard();
 boot();

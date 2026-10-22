@@ -56,8 +56,14 @@ Poné las imágenes en `public/img/` (por ejemplo `public/img/sabado.jpg`, 1200x
 
 ## Notas
 
+- La plataforma verifica con el celular que cada mensaje salga de verdad (estados: en cola, enviado, error). Si se acumulan 5 en cola, pausa sola hasta que el celular los envíe. Si cerrás la pestaña, la lista queda guardada en el navegador y retoma donde estaba.
+- **Sincronizar con el celular:** si el envío quedó a medias o no sabés quiénes recibieron, cargá la lista y tocá "Sincronizar". La plataforma lee el historial del celular y marca a cada contacto como enviado, en cola, con error o pendiente. Después "Reintentar y enviar" manda solo a los que faltan.
+- **Máximo por tanda:** el campo "Máximo de mensajes en esta tanda" corta el envío al llegar a ese número (por ejemplo 450 por día).
+- Si el celular falla 5 veces seguidas, el envío se detiene solo y te muestra el motivo, para no perder el resto de la lista.
+- Para retomar una lista a medias: cargá el mismo archivo y usá "Marcar como ya enviados los primeros N".
+- Los envíos usan un temporizador que no se frena aunque cambies de pestaña, y la compu no se duerme mientras se envía (si el navegador lo permite).
 - Dejá la pestaña abierta mientras se envía. Las pausas entre mensajes las maneja el navegador.
-- La tarjeta la dibuja el celular de quien recibe (Mensajes de Google con vistas previas activadas).   No se puede forzar.
+- La tarjeta la dibuja el celular de quien recibe (Mensajes de Google con vistas previas activadas). No se puede forzar.
 - Usá tu propio dominio y no acortadores tipo bit.ly: muchas veces no generan tarjeta y las operadoras desconfían.
 - Las tildes hacen que cada SMS sea de 70 caracteres en vez de 160. El contador te avisa.
 - Enviá solo a gente que te dio su número, en tandas chicas y con pausas largas, para cuidar tu línea.
