@@ -3,7 +3,7 @@ const L = require('./_lib');
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return L.json(res, 405, { ok: false });
   if (!L.isAuthed(req)) return L.json(res, 401, { ok: false, error: 'Sesión vencida' });
-  if (!L.gateReady()) return L.json(res, 200, { ok: false, error: 'Faltan SMSGATE_USER y SMSGATE_PASS en Vercel' });
+  if (!L.gateReady()) return L.json(res, 200, { ok: false, fatal: true, error: 'Faltan SMSGATE_USER y SMSGATE_PASS en Vercel' });
   const { to, message } = await L.readJson(req);
   if (!/^\+\d{8,15}$/.test(String(to || ''))) return L.json(res, 200, { ok: false, error: 'Número inválido' });
   const text = String(message || '');
@@ -19,7 +19,7 @@ module.exports = async (req, res) => {
       try { j = await r.json(); } catch {}
       return L.json(res, 200, { ok: true, id: j.id || null });
     }
-    if (r.status === 401 || r.status === 403) return L.json(res, 200, { ok: false, error: 'Credenciales del gateway incorrectas' });
+    if (r.status === 401 || r.status === 403) return L.json(res, 200, { ok: false, fatal: true, error: 'Credenciales del gateway incorrectas (revisá SMSGATE_USER y SMSGATE_PASS)' });
     const t = (await r.text()).slice(0, 160);
     L.json(res, 200, { ok: false, error: t || `HTTP ${r.status}` });
   } catch (e) {
